@@ -229,21 +229,29 @@ that also gets passed to child processes spawned with ``os.execv``,
 and (2) use the library name as a crucial part of their symbol
 resolution process.
 
-On Windows and OS X this is straightforward: they resolve symbols
-using a "two-level namespace", i.e., binaries don't just say "I need
-``SSL_read``", they say "I need ``SSL_read`` from ``libssl``". So if
-one binary says that, and another says "I need ``SSL_read`` from
-``pynativelib_openssl__libssl``", then there's no danger of the two
-``SSL_read``'s getting mixed up.
+On Windows, the steps are rougly the following:
+- preload ``pynativelib_openssl__libssl_1.0.2.dll`` using ``LoadLibrary``
+- patch ``pynativelib_openssl__libssl_1.0.2.lib`` required at build time.
+  This is needed to ensure reference to original ``libssl.dll`` are updated.
 
-On Linux, it's a bit more complicated: on Linux, binaries do just say
-"I need ``SSL_read``", and then there's a separate list of libraries
-that get searched. But, thanks to the magic of ELF scopes (don't ask),
-every Python extension module gets its own independent list of
-libraries to be searched -- so if extension module A puts
-``pynativelib_openssl__libssl`` into its list, and extension module B
-puts ``libssl`` into its list, then they'll both end up finding the
-version of ``SSL_read`` that they wanted.
+On Linux, the steps are similar to Windows:
+- preload ``pynativelib_openssl__libssl_1.0.2.so`` using ``dlopen``
+  Note that this approach will work thanks to on "undocumented" `feature
+  of glibc <https://sourceware.org/bugzilla/show_bug.cgi?id=19884>`_.
+- use patchelf to fix the library SONAME.
+
+On OS X, it is definitively complicated: there is no straightforward
+way to teach the loader to look for dependencies different from  the
+ones specified using @rpath and @loader_path. To workaround this, the
+steps are:
+- use ``flat_namespace`` linker flag, this means symbol will be made
+  available as ``dgemm`` instead of ``openblas:dgemm``.
+- mangle symbol names, this means ``pynativelib_openblas_dgemm`` instead
+  of ``dgemm``.
+- weak link to ``pynativelib_openblas_dgemm`` to ensure setting
+  ``DYLD_LIBRARY_PATH`` works as expected.
+
+More details are reported in the `Practical challenges / notes towards a todo list>`_ section.
 
 These platforms' dynamic linkers also provide all kinds of other neat
 features: ``RPATH`` variants, SxS manifests, etc., etc. But it turns
@@ -357,6 +365,14 @@ looks like::
 
     pynativelib_openssl.enable()
     os.execv(pynativelib_openssl._openssl_bin_path, sys.argv)
+
+
+To ensure the executable resolves against its dependencies, the dispatch
+script will update the environment accordingly. On windows, it will add
+the needed library paths associated with the dependent ``pynativelib``'s
+to ``PATH``. On Linux, it will update ``LD_LIBRARY_PATH``, on OS X it will
+update ``DYLD_LIBRARY_PATH``.
+
 
 
 Rejected alternatives
